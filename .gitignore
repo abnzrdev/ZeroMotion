@@ -33,4 +33,7 @@ dist-ssr
 
 # Vercel
 .vercel
+
+# Env files (keep the example tracked)
 .env*
+!.env.example
