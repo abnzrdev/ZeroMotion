@@ -1,9 +1,16 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, Cpu, Loader2, Signature } from "lucide-react";
-import { useState } from "react";
+import { BadgeCheck, Cpu, Loader2, Radio, Signature } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AppShell, LockedGate } from "@/components/AppShell";
 import { useMidnightWallet } from "@/context/MidnightProvider";
+import {
+  publishLedgerEvent,
+  reduceLedger,
+  subscribeLedger,
+  type LedgerEvent,
+  type LedgerMilestone,
+} from "@/lib/ledger";
 import { MidnightService, shortHash } from "@/lib/midnightService";
 import { CLINIC_LEDGER } from "@/lib/mockData";
 import { PATIENT_BRIEFINGS } from "@/lib/clinicalMinimization";
@@ -32,27 +39,82 @@ function ClinicianPage() {
   const { journey, patch, wallet } = useMidnightWallet();
   const [signing, setSigning] = useState<string | null>(null);
   const [approved, setApproved] = useState<Record<string, string>>({});
+  const [ledgerEvents, setLedgerEvents] = useState<LedgerEvent[]>([]);
+  const [ledgerLive, setLedgerLive] = useState(false);
 
-  const selfRow = {
-    name: "Your record",
-    sigil: wallet?.sigil ?? "sigil:local",
-    hash: journey.sensorHash ?? "0x—",
-    cohort: "This device",
-    phase: "Phase II",
-    koosClaim: journey.questionnaireProof ? "Verified: KOOS ≤ 100" : "Awaiting verification",
-    emgClaim: journey.captureProof ? "Verified: EMG Session Complete" : "Awaiting verification",
-    adherence: 88,
-    lastProof: "just now",
-    status: (journey.clinicianTxHash ? "approved" : "pending") as "approved" | "pending",
-  };
+  // Live feed of sterile proof commitments from every patient device.
+  useEffect(() => subscribeLedger((ev) => setLedgerEvents((prev) => [...prev, ev]), setLedgerLive), []);
 
-  const rows = [selfRow, ...CLINIC_LEDGER];
+  const { milestones, approvals } = useMemo(() => reduceLedger(ledgerEvents), [ledgerEvents]);
 
-  const approve = async (id: string, isSelf: boolean) => {
+  // Group the latest milestone per patient.
+  const ledgerRows = useMemo(() => {
+    const byPatient = new Map<string, { q?: LedgerMilestone; m?: LedgerMilestone }>();
+    for (const m of Object.values(milestones)) {
+      const g = byPatient.get(m.patientHash) ?? {};
+      if (m.kind === "questionnaire") g.q = m;
+      else g.m = m;
+      byPatient.set(m.patientHash, g);
+    }
+    return [...byPatient.entries()]
+      .sort((a, b) => {
+        const ta = Math.max(a[1].q?.timestamp ?? 0, a[1].m?.timestamp ?? 0);
+        const tb = Math.max(b[1].q?.timestamp ?? 0, b[1].m?.timestamp ?? 0);
+        return tb - ta;
+      })
+      .map(([addr, ms]) => {
+        return {
+          name:
+            addr === wallet?.address
+              ? "Your record (this device)"
+              : `Patient ${shortHash(addr, 8)}`,
+          sigil: shortHash(addr, 6),
+          hash: ms.q?.commitment ?? ms.m?.commitment ?? "0x—",
+          cohort: addr === wallet?.address ? "This device" : "Shielded ledger",
+          phase: "Phase II",
+          koosClaim: ms.q ? "Verified: KOOS ≤ 100" : "Awaiting verification",
+          emgClaim: ms.m ? "Verified: EMG Session Complete" : "Awaiting verification",
+          adherence: 88,
+          lastProof: "live",
+          status: (approvals[addr] ? "approved" : "pending") as "approved" | "pending",
+          address: addr,
+        };
+      });
+  }, [milestones, approvals, wallet]);
+
+  const selfRow = wallet
+    ? {
+        name: "Your record",
+        sigil: wallet.sigil,
+        hash: journey.sensorHash ?? "0x—",
+        cohort: "This device",
+        phase: "Phase II",
+        koosClaim: journey.questionnaireProof ? "Verified: KOOS ≤ 100" : "Awaiting verification",
+        emgClaim: journey.captureProof ? "Verified: EMG Session Complete" : "Awaiting verification",
+        adherence: 88,
+        lastProof: "just now",
+        status: (journey.clinicianTxHash ? "approved" : "pending") as "approved" | "pending",
+        address: wallet.address,
+      }
+    : null;
+
+  const rows = [...(selfRow ? [selfRow] : []), ...ledgerRows, ...CLINIC_LEDGER];
+
+  const approve = async (id: string, isSelf: boolean, patientHash?: string) => {
     setSigning(id);
-    const tx = await MidnightService.clinicianApproveMilestone(id);
+    const tx = await MidnightService.clinicianApproveMilestone(patientHash ?? id);
     setApproved((a) => ({ ...a, [id]: tx }));
     if (isSelf) patch({ clinicianTxHash: tx });
+    // Publish the release to the shared ledger — the patient's device unlocks
+    // their next recovery phase the moment this transaction lands.
+    if (patientHash) {
+      void publishLedgerEvent({
+        type: "approval",
+        patientHash,
+        txHash: tx,
+        timestamp: Date.now(),
+      });
+    }
     setSigning(null);
   };
 
@@ -83,6 +145,18 @@ function ClinicianPage() {
   return (
     <AppShell title="Clinician Review" subtitle="Verified patient progress">
       <div className="space-y-4">
+        <div
+          className={`flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-xs font-semibold ${
+            ledgerLive
+              ? "border-zk/30 bg-zk/10 text-zk"
+              : "border-warning/30 bg-warning/10 text-warning"
+          }`}
+        >
+          <Radio className={`size-4 ${ledgerLive ? "animate-pulse" : ""}`} />
+          {ledgerLive
+            ? "Shielded ledger connected — new verified milestones appear here instantly"
+            : "Connecting to shielded ledger…"}
+        </div>
         <div className="grid gap-3 sm:grid-cols-3">
           {[
             ["Pending", rows.filter((r) => r.status === "pending").length, "text-warning"],
@@ -99,7 +173,9 @@ function ClinicianPage() {
         <div className="space-y-3">
           {rows.map((row, i) => {
             const id = `${row.sigil}-${i}`;
-            const tx = approved[id] ?? (i === 0 ? journey.clinicianTxHash : null);
+            const patientAddr = "address" in row ? (row.address as string | undefined) : undefined;
+            const ledgerApproval = patientAddr ? approvals[patientAddr]?.txHash : undefined;
+            const tx = approved[id] ?? ledgerApproval ?? (i === 0 ? journey.clinicianTxHash : null);
             const ready =
               row.koosClaim.startsWith("Verified") && row.emgClaim.startsWith("Verified");
             const released = Boolean(tx) || row.status === "approved";
@@ -164,7 +240,9 @@ function ClinicianPage() {
                   ) : (
                     <button
                       disabled={!ready || signing === id}
-                      onClick={() => approve(id, i === 0)}
+                      onClick={() =>
+                        approve(id, i === 0, "address" in row ? (row.address as string) : undefined)
+                      }
                       className="ml-auto flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-xs font-semibold text-primary-foreground disabled:opacity-40"
                     >
                       {signing === id ? (

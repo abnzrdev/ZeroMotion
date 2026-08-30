@@ -15,6 +15,7 @@ import {
   type MidnightIdentity,
   type ProofReceipt,
 } from "@/lib/midnightService";
+import { publishLedgerEvent, subscribeLedger } from "@/lib/ledger";
 
 export type Role = "patient" | "clinician" | "administrator";
 
@@ -178,9 +179,23 @@ export function MidnightProvider({ children }: { children: ReactNode }) {
       setProofRun((p) => ({ ...p, stage: 2 }));
       const receipt = await MidnightService.submitMilestone(circuit, result);
       setProofRun({ active: true, stage: 3, title, receipt });
+      // Publish the sterile commitment to the shared ledger so the clinician
+      // dashboard sees the verified milestone. No raw data — proof IDs only.
+      if (wallet && result.verified) {
+        void publishLedgerEvent({
+          type: "milestone",
+          patientHash: wallet.address,
+          kind: circuit.startsWith("movement") ? "movement" : "questionnaire",
+          circuit,
+          proofId: result.proofId,
+          txHash: receipt.txHash,
+          commitment: receipt.proofId,
+          timestamp: receipt.timestamp,
+        });
+      }
       return receipt;
     },
-    [],
+    [wallet],
   );
 
   const dismissProof = useCallback(
@@ -198,6 +213,18 @@ export function MidnightProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resetJourney = useCallback(() => setJourney(EMPTY), []);
+
+  // Listen for the clinician's milestone release on the shared ledger —
+  // when the doctor approves this Recovery ID, the plan unlocks live here.
+  useEffect(() => {
+    if (!wallet) return;
+    const address = wallet.address;
+    return subscribeLedger((event) => {
+      if (event.type === "approval" && event.patientHash === address) {
+        patch({ clinicianTxHash: event.txHash });
+      }
+    });
+  }, [wallet, patch]);
 
   const unlockedSteps = useMemo<Record<JourneyStep, boolean>>(
     () => ({
