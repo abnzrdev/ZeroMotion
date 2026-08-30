@@ -14,5 +14,5 @@ export default defineConfig({
   },
   // Lovable's hosting targets Cloudflare (default); when building on Vercel,
   // pin Nitro to the vercel preset. VERCEL is set automatically by Vercel's CI.
-  ...(process.env.VERCEL ? { nitro: { preset: "vercel" } } : {}),
+  ...(process.env["VERCEL"] ? { nitro: { preset: "vercel" } } : {}),
 });

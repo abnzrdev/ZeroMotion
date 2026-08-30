@@ -2,14 +2,21 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowRight,
   BarChart3,
+  Check,
+  Copy,
+  Eye,
   HeartPulse,
   Loader2,
   Stethoscope,
   User,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useMidnightWallet, type Role } from "@/context/MidnightProvider";
+import {
+  generateRecoveryPhrase,
+  validateRecoveryPhrase,
+} from "@/lib/recoveryPhrase";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -184,8 +191,8 @@ function PatientGate({
   disconnectWallet: () => void;
   go: () => void;
 }) {
-  const [mode, setMode] = useState<"choose" | "returning">("choose");
-  const [phrase, setPhrase] = useState("");
+  const [mode, setMode] = useState<"choose" | "new" | "returning">("choose");
+
 
   if (wallet) {
     return (
@@ -213,11 +220,10 @@ function PatientGate({
     return (
       <div className="animate-rise space-y-3">
         <button
-          disabled={connecting}
-          onClick={() => connectWallet(`patient-${Date.now()}`)}
+          onClick={() => setMode("new")}
           className="flex w-full items-center justify-center gap-2 rounded-2xl bg-foreground px-6 py-3.5 text-base font-bold text-background transition hover:bg-primary disabled:opacity-60"
         >
-          {connecting ? <Loader2 className="size-5 animate-spin" /> : <HeartPulse className="size-5" />}
+          <HeartPulse className="size-5" />
           I'm new here
         </button>
         <button
@@ -225,38 +231,189 @@ function PatientGate({
           className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-border px-6 py-3.5 text-base font-semibold text-foreground transition hover:border-accent"
         >
           <User className="size-5 text-accent" />
-          I've used ZeroMotion before
+          I have a recovery phrase
         </button>
       </div>
     );
   }
 
+  if (mode === "new") {
+    return (
+      <NewPatientPhraseSetup
+        connecting={connecting}
+        connectWallet={connectWallet}
+        onBack={() => setMode("choose")}
+      />
+    );
+  }
+
+  return <RestorePhraseForm connecting={connecting} connectWallet={connectWallet} onBack={() => setMode("choose")} />;
+}
+
+/* --------------------------- Recovery phrase screens --------------------------- */
+
+const PHRASE_LENGTH = 12;
+
+/** 12 words a returning patient types to restore their Recovery ID. */
+function RestorePhraseForm({
+  connecting,
+  connectWallet,
+  onBack,
+}: {
+  connecting: boolean;
+  connectWallet: (passphrase?: string) => Promise<void>;
+  onBack: () => void;
+}) {
+  const [phrase, setPhrase] = useState("");
+  const validation = useMemo(() => validateRecoveryPhrase(phrase), [phrase]);
+  const words = phrase.split(/[\s,;.]+/).filter(Boolean);
+
   return (
     <div className="animate-rise space-y-3">
       <p className="text-sm text-muted-foreground">
-        Type the recovery phrase you saved last time.
+        Type the 12-word recovery phrase you saved when you created your Recovery ID.
       </p>
       <textarea
         value={phrase}
         onChange={(e) => setPhrase(e.target.value)}
-        rows={2}
-        placeholder="e.g. river sunset meadow …"
-        className="w-full resize-none rounded-2xl border border-input bg-secondary p-3.5 text-sm text-foreground outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+        rows={3}
+        spellCheck={false}
+        autoComplete="off"
+        placeholder="word one  word two  word three …"
+        className="w-full resize-none rounded-2xl border border-input bg-secondary p-3.5 font-mono text-sm text-foreground outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
       />
+      <div className="flex items-center justify-between text-xs">
+        <span className={words.length === 0 || words.length === PHRASE_LENGTH ? "text-muted-foreground" : "text-destructive"}>
+          {words.length} / {PHRASE_LENGTH} words
+        </span>
+        {words.length === PHRASE_LENGTH && validation.ok && (
+          <span className="flex items-center gap-1 font-medium text-primary">
+            <Check className="size-3.5" /> looks good
+          </span>
+        )}
+      </div>
+      {words.length > 0 && !validation.ok && (
+        <p className="text-xs font-medium text-destructive">{validation.error}</p>
+      )}
       <div className="flex gap-3">
         <button
-          onClick={() => setMode("choose")}
+          onClick={onBack}
           className="rounded-2xl border-2 border-border px-5 py-3 text-sm font-semibold text-muted-foreground"
         >
           Back
         </button>
         <button
-          disabled={connecting || phrase.trim().length < 4}
-          onClick={() => connectWallet(phrase.trim())}
-          className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-base font-bold text-background disabled:opacity-50"
+          disabled={!validation.ok || connecting}
+          onClick={() => connectWallet(validation.ok ? validation.normalized : undefined)}
+          className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-base font-bold text-background transition hover:bg-primary disabled:opacity-50"
         >
           {connecting ? <Loader2 className="size-5 animate-spin" /> : null}
-          Continue
+          Restore my Recovery ID
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Shows a freshly generated 12-word recovery phrase once, with copy/reveal,
+ * and requires the patient to confirm they saved it before the wallet is created.
+ */
+function NewPatientPhraseSetup({
+  connecting,
+  connectWallet,
+  onBack,
+}: {
+  connecting: boolean;
+  connectWallet: (passphrase?: string) => Promise<void>;
+  onBack: () => void;
+}) {
+  const [phrase] = useState(() => generateRecoveryPhrase());
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const words = phrase.split(" ");
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(phrase);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable — manual selection still works */
+    }
+  };
+
+  return (
+    <div className="animate-rise space-y-3">
+      <div>
+        <h3 className="font-display text-lg font-bold">Save your recovery phrase</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          These 12 words <span className="font-semibold text-foreground">are</span> your Recovery
+          ID. Write them down — they're the only way back in, and they never leave your device.
+        </p>
+      </div>
+
+      <div className="relative rounded-2xl border border-primary/30 bg-primary/5 p-3">
+        <div className="grid grid-cols-3 gap-1">
+          {words.map((word, i) => (
+            <span
+              key={`${word}-${i}`}
+              className={`flex items-center gap-1.5 rounded-lg bg-background/80 px-2 py-1.5 text-xs ${
+                revealed ? "" : "select-none blur-[5px]"
+              }`}
+            >
+              <span className="w-4 text-right text-[10px] font-semibold text-muted-foreground">
+                {i + 1}
+              </span>
+              <span className="font-mono text-sm font-medium">{word}</span>
+            </span>
+          ))}
+        </div>
+        {!revealed && (
+          <button
+            onClick={() => setRevealed(true)}
+            className="absolute inset-0 flex items-center justify-center rounded-2xl bg-background/30 text-sm font-semibold text-foreground backdrop-blur-[1px] transition hover:bg-background/20"
+          >
+            <Eye className="mr-2 size-4" /> Tap to reveal
+          </button>
+        )}
+      </div>
+
+      <button
+        onClick={copy}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-border px-3 py-2 text-xs font-semibold text-foreground transition hover:border-accent"
+      >
+        {copied ? <Check className="size-4 text-primary" /> : <Copy className="size-4" />}
+        {copied ? "Copied to clipboard" : "Copy phrase"}
+      </button>
+
+      <label className="flex cursor-pointer items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={saved}
+          onChange={(e) => setSaved(e.target.checked)}
+          className="mt-0.5 size-4 shrink-0 accent-[oklch(0.5_0.105_152)]"
+        />
+        I wrote down all 12 words somewhere safe. I understand that losing them means losing
+        access to this Recovery ID.
+      </label>
+
+      <div className="flex gap-3">
+        <button
+          onClick={onBack}
+          className="rounded-2xl border-2 border-border px-5 py-3 text-sm font-semibold text-muted-foreground"
+        >
+          Back
+        </button>
+        <button
+          disabled={!saved || connecting}
+          onClick={() => connectWallet(phrase)}
+          className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-foreground px-5 py-3 text-base font-bold text-background transition hover:bg-primary disabled:opacity-50"
+        >
+          {connecting ? <Loader2 className="size-5 animate-spin" /> : null}
+          Create my Recovery ID
         </button>
       </div>
     </div>

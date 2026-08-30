@@ -7,6 +7,14 @@
  *  - Only witness-derived commitments + ZK proofs are published to the ledger.
  */
 
+import {
+  generateRecoveryPhrase,
+  phraseToSeed,
+  validateRecoveryPhrase,
+} from "@/lib/recoveryPhrase";
+
+export { generateRecoveryPhrase, validateRecoveryPhrase };
+
 export type ProofStage = {
   label: string;
   detail: string;
@@ -68,8 +76,17 @@ export const MidnightService = {
   /** Creates or restores a local key-pair and returns the shielded address. */
   async connectIdentity(passphrase?: string): Promise<string> {
     await wait(900);
-    const seed = passphrase ? localDigest(passphrase).slice(2, 14) : randomHex(12);
-    return `mn_shield_addr_${seed}${randomHex(20)}`;
+    if (passphrase) {
+      // Deterministic: the same recovery phrase must always restore the same
+      // shielded address — no randomness beyond the digest of the phrase.
+      return `mn_shield_addr_${phraseToSeed(passphrase).slice(2)}`;
+    }
+    return `mn_shield_addr_${randomHex(12)}${randomHex(20)}`;
+  },
+
+  /** Validate a phrase without creating a wallet. */
+  isValidPhrase(phrase: string): boolean {
+    return validateRecoveryPhrase(phrase).ok;
   },
 
   /** Circuit: prove 0 <= koosScore <= 100 without revealing item-level answers. */
