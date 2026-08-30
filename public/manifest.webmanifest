@@ -1,0 +1,14 @@
+{
+  "name": "ZeroMotion",
+  "short_name": "ZeroMotion ZK",
+  "description": "Privacy-first, AI-powered knee rehabilitation dApp on the Midnight Network.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFF7BC",
+  "theme_color": "#FFF7BC",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "48x48", "type": "image/x-icon" }
+  ]
+}
