@@ -40,6 +40,8 @@ export type MidnightIdentity = {
   sigil: string;
   balance: { night: number; dust: number };
   shielded: boolean;
+  /** The phrase this identity was created/restored from — device-local only. */
+  phrase?: string;
 };
 
 const HEX = "0123456789abcdef";

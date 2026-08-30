@@ -31,7 +31,7 @@ export type JourneyState = {
   completedExercises: string[];
 };
 
-const STORAGE_KEY = "zm-zk-rehabcare:v1";
+const STORAGE_KEY = "zm-zk-rehabcare:v2";
 
 const EMPTY: JourneyState = {
   role: null,
@@ -43,6 +43,32 @@ const EMPTY: JourneyState = {
   clinicianTxHash: null,
   completedExercises: [],
 };
+
+/**
+ * Journey state is stored PER Recovery ID (keyed by the phrase-derived
+ * address), so a patient can sign out, restore their phrase on any device,
+ * and get their full progress back.
+ */
+type AccountEntry = { journey: JourneyState; wallet?: MidnightIdentity };
+type Persisted = { accounts: Record<string, AccountEntry>; last?: string };
+
+function readStore(): Persisted {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as Persisted;
+  } catch {
+    /* local store unavailable */
+  }
+  return { accounts: {} };
+}
+
+function writeStore(next: Persisted) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    /* quota or private mode — non-fatal */
+  }
+}
 
 type ProofRun = {
   active: boolean;
@@ -97,38 +123,39 @@ export function MidnightProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { journey?: JourneyState; wallet?: MidnightIdentity };
-        if (parsed.journey) setJourney({ ...EMPTY, ...parsed.journey });
-        if (parsed.wallet) setWallet(parsed.wallet);
-      }
-    } catch {
-      /* local store unavailable — journey stays in memory only */
+    const store = readStore();
+    const entry = store.last ? store.accounts[store.last] : undefined;
+    if (entry) {
+      setJourney({ ...EMPTY, ...entry.journey });
+      if (entry.wallet) setWallet(entry.wallet);
     }
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ journey, wallet }));
-    } catch {
-      /* quota or private mode — non-fatal */
-    }
+    if (!wallet) return;
+    const store = readStore();
+    store.accounts[wallet.address] = { journey, wallet };
+    store.last = wallet.address;
+    writeStore(store);
   }, [journey, wallet, hydrated]);
 
   const connectWallet = useCallback(async (passphrase?: string) => {
     setConnecting(true);
     try {
       const address = await MidnightService.connectIdentity(passphrase);
-      setWallet({
+      const identity: MidnightIdentity = {
         address,
         sigil: `sigil:${address.slice(16, 22)}…${address.slice(-4)}`,
         balance: { night: 1284.5502, dust: 42.118 },
         shielded: true,
-      });
+        ...(passphrase ? { phrase: passphrase } : {}),
+      };
+      // Restoring an existing Recovery ID? Bring its journey back.
+      const existing = readStore().accounts[address];
+      setJourney(existing ? { ...EMPTY, ...existing.journey } : { ...EMPTY });
+      setWallet(identity);
     } finally {
       setConnecting(false);
     }
