@@ -13,7 +13,6 @@ import { Toaster } from "@/components/ui/sonner";
 import { MidnightProvider } from "@/context/MidnightProvider";
 import { ZkProofOverlay } from "@/components/ZkProofOverlay";
 import appCss from "../styles.css?url";
-import { reportLovableError } from "../lib/lovable-error-reporting";
 
 
 function NotFoundComponent() {
@@ -42,7 +41,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
   useEffect(() => {
-    reportLovableError(error, { boundary: "tanstack_root_error_component" });
+    console.error(error, { boundary: "tanstack_root_error_component" });
   }, [error]);
 
   return (
